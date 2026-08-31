@@ -4,8 +4,9 @@ import qs.Ui
 
 // Usage popup. BarWidget.qml owns the bar slot and scan state.
 // Grok card mirrors grok.com Settings → Usage (weekly pool + products).
-// Cursor card is optional (settings page toggle, off by default) and shows two
-// monthly pools + a shared reset when the Cursor account matches Grok.
+// Cursor and Grok Bot cards are optional (settings page toggles, off by
+// default). Cursor shows two monthly pools; Grok Bot shows its weekly pool.
+// Both require the Cursor account to match Grok.
 // Gear and reload follow the HEY panel: header buttons, flip to settings.
 Panel {
   id: root
@@ -37,6 +38,7 @@ Panel {
   property string grokLoginName: ""
   property string grokLoginEmail: ""
   property bool grokIdentityOpen: false
+  property bool grokBotIdentityOpen: false
   property bool cursorIdentityOpen: false
   property bool settingsOpen: false
   property bool pendingSettingsOpen: false
@@ -53,6 +55,9 @@ Panel {
   readonly property bool showCursorUsage: hostWidget
     ? hostWidget.showCursorUsage === true
     : !!(settings && settings.showCursorUsage === true)
+  readonly property bool showGrokBotUsage: hostWidget
+    ? hostWidget.showGrokBotUsage === true
+    : !!(settings && settings.showGrokBotUsage === true)
   readonly property real cursorAutoPercent: hostWidget ? Number(hostWidget.cursorAutoPercent) : -1
   readonly property real cursorApiPercent: hostWidget ? Number(hostWidget.cursorApiPercent) : -1
   readonly property string cursorResetAt: hostWidget ? String(hostWidget.cursorResetAt || "") : ""
@@ -63,6 +68,13 @@ Panel {
   readonly property string cursorUsageStatusText: hostWidget ? String(hostWidget.cursorUsageStatusText || "") : ""
   readonly property string cursorAuthHelpText: hostWidget ? String(hostWidget.cursorAuthHelpText || "") : ""
   readonly property bool cursorHasData: cursorAutoPercent >= 0 || cursorApiPercent >= 0
+  readonly property real grokBotPercent: hostWidget ? Number(hostWidget.grokBotPercent) : -1
+  readonly property string grokBotResetAt: hostWidget ? String(hostWidget.grokBotResetAt || "") : ""
+  readonly property string grokBotPeriodStart: hostWidget ? String(hostWidget.grokBotPeriodStart || "") : ""
+  readonly property string grokBotTierLabel: hostWidget ? String(hostWidget.grokBotTierLabel || "") : ""
+  readonly property string grokBotUsageStatusText: hostWidget ? String(hostWidget.grokBotUsageStatusText || "") : ""
+  readonly property string grokBotAuthHelpText: hostWidget ? String(hostWidget.grokBotAuthHelpText || "") : ""
+  readonly property bool grokBotHasData: grokBotPercent >= 0
 
   // TEMP QA hook: force over-pace styling (leave false in production).
   readonly property bool simulateOverPace: false
@@ -135,7 +147,8 @@ Panel {
     if (root.refreshing) return true
     if (!hostWidget) return false
     if (hostWidget.refreshing === true) return true
-    return root.showCursorUsage && hostWidget.cursorRefreshing === true
+    return (root.showCursorUsage || root.showGrokBotUsage)
+      && hostWidget.cursorRefreshing === true
   }
 
   // "23% of weekly limit used"
@@ -203,6 +216,37 @@ Panel {
   readonly property url cursorIconSource: colorLuminance(surface) >= 0.5
     ? Qt.resolvedUrl("assets/cursor-light.svg")
     : Qt.resolvedUrl("assets/cursor.svg")
+
+  readonly property real grokBotExpectedPace: {
+    if (hostWidget && typeof hostWidget.grokBotExpectedPace === "number"
+        && isFinite(hostWidget.grokBotExpectedPace) && hostWidget.grokBotExpectedPace >= 0)
+      return Math.max(0, Math.min(1, Number(hostWidget.grokBotExpectedPace)))
+    var start = root.parseTimeMs(grokBotPeriodStart)
+    var end = root.parseTimeMs(grokBotResetAt)
+    if (!(end > 0)) return -1
+    if (!(start > 0) || !(start < end))
+      start = end - 7 * 24 * 3600 * 1000
+    var frac = (nowMs - start) / (end - start)
+    if (!isFinite(frac)) return -1
+    return Math.max(0, Math.min(1, frac))
+  }
+  readonly property real grokBotDisplay: {
+    var raw = grokBotPercent
+    if (!root.simulateOverPace || !(raw >= 0) || !(grokBotExpectedPace >= 0))
+      return raw
+    return Math.max(0, Math.min(1, Math.max(raw, grokBotExpectedPace + 0.15)))
+  }
+  readonly property bool grokBotOverPace: grokBotExpectedPace >= 0 && grokBotDisplay >= 0
+    && grokBotDisplay > grokBotExpectedPace + 0.0001
+  readonly property string grokBotTitle: grokBotTierLabel !== "" ? grokBotTierLabel : "Grok Bot"
+  readonly property string grokBotUsedLabel: grokBotDisplay >= 0
+    ? Math.round(grokBotDisplay * 100) + "% of weekly limit used"
+    : ""
+  readonly property string grokBotResetsLabel: root.formatResetsLabel(grokBotResetAt)
+  readonly property bool grokBotAlarming: grokBotDisplay >= 0.9 || grokBotOverPace
+  readonly property url grokBotIconSource: colorLuminance(surface) >= 0.5
+    ? Qt.resolvedUrl("assets/grok-bot-light.svg")
+    : Qt.resolvedUrl("assets/grok-bot.svg")
 
   // Segment shades of the pace-aware fill color (accent under, urgent over).
   readonly property var segmentPalette: {
@@ -299,7 +343,8 @@ Panel {
     var live = false
     if (hostWidget) {
       live = hostWidget.refreshing === true
-        || (root.showCursorUsage && hostWidget.cursorRefreshing === true)
+        || ((root.showCursorUsage || root.showGrokBotUsage)
+          && hostWidget.cursorRefreshing === true)
     }
     if (!live && Date.now() < root.refreshHoldUntilMs)
       live = true
@@ -319,6 +364,7 @@ Panel {
   function close() {
     pageFlip.stop()
     root.grokIdentityOpen = false
+    root.grokBotIdentityOpen = false
     root.cursorIdentityOpen = false
     root.settingsOpen = false
     root.pendingSettingsOpen = false
@@ -351,6 +397,11 @@ Panel {
   function setShowCursorUsage(on) {
     if (hostWidget && typeof hostWidget.setShowCursorUsage === "function")
       hostWidget.setShowCursorUsage(on)
+  }
+
+  function setShowGrokBotUsage(on) {
+    if (hostWidget && typeof hostWidget.setShowGrokBotUsage === "function")
+      hostWidget.setShowGrokBotUsage(on)
   }
 
   function switchPanel(direction) {
@@ -602,7 +653,110 @@ Panel {
         }
 
         PanelSeparator {
-          visible: grokCard.visible && cursorCard.visible
+          visible: grokCard.visible && (grokBotCard.visible || cursorCard.visible)
+          foreground: root.foreground
+        }
+
+        Column {
+          id: grokBotCard
+          visible: root.showGrokBotUsage && (root.grokBotHasData || root.grokBotUsageStatusText !== "")
+          width: parent.width
+          spacing: Style.space(12)
+
+          PlanHeader {
+            id: grokBotHeader
+            width: parent.width
+            title: root.grokBotTitle
+            meta: "\u00A0"
+            metaOpacity: 0
+            iconSource: root.grokBotIconSource
+            accountName: root.cursorLoginName
+            accountEmail: root.cursorLoginEmail
+            identityVisible: root.grokBotIdentityOpen
+            headerActionsVisible: !grokCard.visible
+            refreshing: root.panelRefreshing
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onIdentityClicked: root.grokBotIdentityOpen = !root.grokBotIdentityOpen
+            onSettingsClicked: root.showSettings(true)
+            onRefreshClicked: root.refresh()
+          }
+
+          BorderSurface {
+            visible: root.grokBotUsageStatusText !== ""
+            width: parent.width
+            implicitHeight: grokBotStatusText.implicitHeight + Style.spacing.xl * 2
+            color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
+            borderSpec: Border.flat(Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35), 1)
+            radius: Style.cornerRadius
+
+            Text {
+              id: grokBotStatusText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(12)
+              anchors.rightMargin: Style.space(12)
+              text: root.grokBotAuthHelpText !== "" ? root.grokBotAuthHelpText : root.grokBotUsageStatusText
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          Column {
+            visible: root.grokBotHasData
+            width: parent.width
+            spacing: Style.space(10)
+
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(grokBotUsedText.implicitHeight, grokBotResetsText.implicitHeight)
+
+              Text {
+                id: grokBotUsedText
+                text: root.grokBotUsedLabel
+                color: root.grokBotAlarming ? root.urgent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: grokBotResetsText
+                visible: text !== ""
+                text: root.grokBotResetsLabel
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideLeft
+                horizontalAlignment: Text.AlignRight
+                anchors.right: parent.right
+                anchors.left: grokBotUsedText.right
+                anchors.leftMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            SegmentedMeter {
+              width: parent.width
+              segments: []
+              totalPercent: root.grokBotDisplay
+              expectedPace: root.grokBotExpectedPace
+              overPace: root.grokBotOverPace
+              fillColor: root.grokBotOverPace ? root.overPaceColor : root.underPaceColor
+              paceMarkerColor: root.paceMarkerColor
+              dayCount: 7
+            }
+          }
+        }
+
+        PanelSeparator {
+          visible: grokBotCard.visible && cursorCard.visible
           foreground: root.foreground
         }
 
@@ -622,7 +776,7 @@ Panel {
             accountName: root.cursorLoginName
             accountEmail: root.cursorLoginEmail
             identityVisible: root.cursorIdentityOpen
-            headerActionsVisible: !grokCard.visible
+            headerActionsVisible: !grokCard.visible && !grokBotCard.visible
             refreshing: root.panelRefreshing
             foreground: root.foreground
             dim: root.dim
@@ -777,6 +931,17 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           onClicked: root.setShowCursorUsage(!root.showCursorUsage)
+        }
+
+        Toggle {
+          id: grokBotUsageSetting
+          width: parent.width
+          label: "Grok Bot usage"
+          description: "Show Grok Bot weekly usage on the bar when the Cursor account matches Grok."
+          checked: root.showGrokBotUsage
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.setShowGrokBotUsage(!root.showGrokBotUsage)
         }
       }
     }

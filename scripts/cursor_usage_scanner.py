@@ -5,6 +5,10 @@ Show Cursor only when that session belongs to the same account as Grok.
 A second Cursor login is hidden. The Grok OIDC token is never sent to
 Cursor APIs. Account identifiers are never written to scanner JSON.
 
+Optional Grok Bot weekly pool (--include-sand) uses the same Cursor
+session via DashboardService/GetSandUsageStatus. SuperGrok weekly usage
+is a different scanner; this file never calls grok.com.
+
 Sources: ~/.config/cursor/auth.json (CLI) and Cursor state.vscdb (IDE).
 Expired session JWTs are refreshed via api2.cursor.sh and written back
 only to the CLI auth.json.
@@ -36,7 +40,7 @@ API_BASE = "https://api2.cursor.sh/aiserver.v1.DashboardService"
 TOKEN_URL = "https://api2.cursor.sh/oauth/token"
 CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 CURSOR_ISS = "https://authentication.cursor.sh"
-USER_AGENT = "grokbar-omarchy/1.1"
+USER_AGENT = "grokbar-omarchy/1.3"
 REFRESH_SKEW_SEC = 120
 
 ALLOWED_JWT_TYPES = frozenset({"session", "web"})
@@ -80,6 +84,12 @@ def empty_result(**overrides):
     "authHelpText": "",
     "categories": [],
     "xLoginFound": False,
+    "grokBotPercent": -1,
+    "grokBotResetAt": "",
+    "grokBotPeriodStart": "",
+    "grokBotTierLabel": "",
+    "grokBotUsageStatusText": "",
+    "grokBotAuthHelpText": "",
   }
   out.update(overrides)
   return out
@@ -277,6 +287,8 @@ def expired_x_result(creds=None):
     xLoginFound=True,
     usageStatusText="Sign in to Cursor",
     authHelpText="Cursor session expired. Sign in to Cursor again.",
+    grokBotUsageStatusText="Sign in to Cursor",
+    grokBotAuthHelpText="Cursor session expired. Sign in to Cursor again.",
   )
 
 
@@ -578,6 +590,88 @@ def fetch_period_usage(creds):
   )
 
 
+def fetch_sand_usage(creds):
+  """Grok Bot weekly included pool (internally Sand)."""
+  return http_post_json(
+    f"{API_BASE}/GetSandUsageStatus",
+    creds["token"],
+    {},
+    timeout=15,
+  )
+
+
+def pick_field(payload, *keys):
+  if not isinstance(payload, dict):
+    return None
+  for key in keys:
+    if key in payload and payload.get(key) is not None:
+      return payload.get(key)
+  return None
+
+
+def fraction_from_percent(value):
+  if value is None or value == "":
+    return -1.0
+  try:
+    number = float(value)
+  except (TypeError, ValueError):
+    return -1.0
+  if not math.isfinite(number):
+    return -1.0
+  return number / 100.0
+
+
+def truthy(value):
+  return value is True or str(value).strip().lower() in {"true", "1"}
+
+
+def apply_sand(out, payload, kind=None):
+  """Overlay Grok Bot weekly fields. Missing allowance stays empty, not 0%."""
+  if kind == "auth":
+    out["grokBotUsageStatusText"] = "Sign in to Cursor"
+    out["grokBotAuthHelpText"] = "Cursor session expired. Sign in to Cursor again."
+    return out
+  if not isinstance(payload, dict):
+    if kind is not None:
+      out["grokBotUsageStatusText"] = "Grok Bot limits unavailable"
+      out["grokBotAuthHelpText"] = "Could not load Grok Bot weekly usage."
+    return out
+
+  has_limit = truthy(pick_field(
+    payload, "hasNonZeroIncludedLimit", "has_non_zero_included_limit",
+  ))
+  if not has_limit:
+    out["grokBotUsageStatusText"] = "No Grok Bot allowance"
+    out["grokBotAuthHelpText"] = (
+      "This Cursor account has no included Grok Bot weekly pool."
+    )
+    return out
+
+  frac = fraction_from_percent(pick_field(payload, "usagePercent", "usage_percent"))
+  if frac < 0:
+    out["grokBotUsageStatusText"] = "Grok Bot limits unavailable"
+    out["grokBotAuthHelpText"] = "Grok Bot usage response did not include a percentage."
+    return out
+
+  reset_dt = parse_when(pick_field(
+    payload, "nextResetTimestampUtc", "next_reset_timestamp_utc",
+  ))
+  start_dt = parse_when(pick_field(
+    payload, "currentPeriodStart", "current_period_start",
+  ))
+  if start_dt is None and reset_dt is not None:
+    start_dt = reset_dt - timedelta(days=7)
+
+  label = pick_field(payload, "grokPlanLabel", "grok_plan_label") or "Grok Bot"
+  out["grokBotPercent"] = frac
+  out["grokBotResetAt"] = to_iso(reset_dt)
+  out["grokBotPeriodStart"] = to_iso(start_dt)
+  out["grokBotTierLabel"] = plain_text(format_tier(label), max_len=80)
+  out["grokBotUsageStatusText"] = ""
+  out["grokBotAuthHelpText"] = ""
+  return out
+
+
 def fetch_plan_name(creds):
   payload, kind, _err = http_post_json(
     f"{API_BASE}/GetPlanInfo",
@@ -791,6 +885,11 @@ def main(argv=None):
     action="store_true",
     help="Print ready/absent if an X-login token exists (no usage API)",
   )
+  parser.add_argument(
+    "--include-sand",
+    action="store_true",
+    help="Also fetch Grok Bot weekly usage (GetSandUsageStatus)",
+  )
   args = parser.parse_args(argv)
 
   auth_path = expand_path(args.auth, DEFAULT_AUTH)
@@ -819,22 +918,39 @@ def main(argv=None):
     return emit(empty_result())
 
   payload, kind, err = with_auth_retry(creds, fetch_period_usage)
-  if kind == "auth":
+  sand = None
+  sand_kind = None
+  if args.include_sand:
+    sand, sand_kind, _sand_err = with_auth_retry(creds, fetch_sand_usage)
+
+  if kind == "auth" and (not args.include_sand or sand_kind == "auth"):
     return emit(expired_x_result(creds))
+
+  # Plan name and account identity are best-effort; usage still stands.
+  if kind != "auth" or sand_kind != "auth":
+    tier_label = fetch_plan_name(creds)
+    account_name, account_email = fetch_account(creds)
+    creds["account_name"] = account_name
+    creds["account_email"] = account_email
+  else:
+    tier_label = ""
+
   if payload is None:
-    return emit(x_error_result(
+    out = x_error_result(
       creds,
-      "Cursor limits unavailable",
-      err or "Could not load Cursor period usage.",
-    ))
+      "Cursor limits unavailable" if kind != "auth" else "Sign in to Cursor",
+      err or (
+        "Cursor session expired. Sign in to Cursor again."
+        if kind == "auth"
+        else "Could not load Cursor period usage."
+      ),
+    )
+  else:
+    out = build_result(creds, payload, tier_label=tier_label)
 
-  # Plan name and account identity are best-effort; period usage still stands.
-  tier_label = fetch_plan_name(creds)
-  account_name, account_email = fetch_account(creds)
-  creds["account_name"] = account_name
-  creds["account_email"] = account_email
-
-  return emit(build_result(creds, payload, tier_label=tier_label))
+  if args.include_sand:
+    apply_sand(out, sand, sand_kind)
+  return emit(out)
 
 
 if __name__ == "__main__":

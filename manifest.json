@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "rlimberger.grokbar-omarchy",
   "name": "Grokbar",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "rlimberger",
   "license": "MIT",
-  "description": "SuperGrok weekly pool on the bar, with optional Cursor monthly pools.",
+  "description": "SuperGrok weekly pool on the bar, with optional Cursor monthly and Grok Bot weekly pools.",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Grokbar",
-    "description": "Bar widget with SuperGrok weekly pool and an optional Cursor monthly-usage cluster.",
+    "description": "Bar widget with SuperGrok weekly pool plus optional Cursor monthly and Grok Bot weekly clusters.",
     "category": "AI",
     "aliases": [
       "grokbar-omarchy"
@@ -25,6 +25,7 @@
     "defaults": {
       "refreshIntervalSec": 300,
       "showCursorUsage": false,
+      "showGrokBotUsage": false,
       "authPath": "",
       "stateDbPath": "",
       "cursorAuthPath": ""
@@ -35,6 +36,13 @@
         "type": "boolean",
         "label": "Show Cursor usage",
         "description": "Show Cursor monthly pools on the bar. Off by default; also toggled from panel settings.",
+        "defaultValue": false
+      },
+      {
+        "key": "showGrokBotUsage",
+        "type": "boolean",
+        "label": "Show Grok Bot usage",
+        "description": "Show Grok Bot weekly pool on the bar. Off by default; also toggled from panel settings.",
         "defaultValue": false
       },
       {

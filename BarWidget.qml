@@ -5,8 +5,9 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Bar widget: Grok weekly pool, plus optional Cursor monthly pools.
-// Cursor is off by default; the panel settings toggle (showCursorUsage) turns it on.
+// Bar widget: Grok weekly pool, plus optional Cursor monthly pools and
+// optional Grok Bot weekly pool. Both extras are off by default; panel
+// settings toggles (showCursorUsage / showGrokBotUsage) turn them on.
 // Each provider is icon + % + reset (5d / 12h). Cursor also shows Other Models %.
 // Self-hides a provider with no usable session or period-pool data.
 // Left click toggles the panel; right click refreshes.
@@ -50,10 +51,21 @@ BarWidget {
   property bool cursorRefreshing: false
   property bool cursorAvailable: false
 
+  // Grok Bot weekly pool (same Cursor session as the monthly pools).
+  property real grokBotPercent: -1
+  property string grokBotResetAt: ""
+  property string grokBotPeriodStart: ""
+  property string grokBotTierLabel: ""
+  property string grokBotUsageStatusText: ""
+  property string grokBotAuthHelpText: ""
+  property bool grokBotHasData: false
+
   readonly property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 300)) || 300)
   // Off unless the panel toggle (or shell.json) turns it on. Bind to
   // `settings` directly so persistSettings() redraws without a reload.
   readonly property bool showCursorUsage: !!(settings && settings.showCursorUsage === true)
+  readonly property bool showGrokBotUsage: !!(settings && settings.showGrokBotUsage === true)
+  readonly property bool needsCursorSession: showCursorUsage || showGrokBotUsage
 
   // TEMP QA hook: force over-pace styling (leave false in production).
   readonly property bool simulateOverPace: false
@@ -127,15 +139,54 @@ BarWidget {
     return isFinite(ms) ? root.formatBarDuration(ms) : ""
   }
 
+  readonly property real grokBotExpectedPace: {
+    var start = root.parseTimeMs(grokBotPeriodStart)
+    var end = root.parseTimeMs(grokBotResetAt)
+    if (!(start > 0) || !(end > start)) {
+      if (!(end > 0)) return -1
+      start = end - 7 * 24 * 3600 * 1000
+    }
+    var frac = (root.nowMs - start) / (end - start)
+    if (!isFinite(frac)) return -1
+    return Math.max(0, Math.min(1, frac))
+  }
+  readonly property real grokBotDisplay: {
+    if (!root.simulateOverPace || !(grokBotPercent >= 0) || !(grokBotExpectedPace >= 0))
+      return grokBotPercent
+    return Math.max(0, Math.min(1, Math.max(grokBotPercent, grokBotExpectedPace + 0.15)))
+  }
+  readonly property bool grokBotOverPace: grokBotExpectedPace >= 0 && grokBotDisplay >= 0
+    && grokBotDisplay > grokBotExpectedPace + 0.0001
+  readonly property bool grokBotAlarming: grokBotDisplay >= 0.9 || grokBotOverPace
+  readonly property string grokBotText: grokBotDisplay >= 0 ? Math.round(grokBotDisplay * 100) + "%" : ""
+  readonly property string grokBotResetText: {
+    if (grokBotResetAt === "") return ""
+    var ms = new Date(grokBotResetAt).getTime() - root.nowMs
+    return isFinite(ms) ? root.formatBarDuration(ms) : ""
+  }
+
   readonly property bool grokVisible: grokAvailable && hasData
   readonly property bool cursorVisible: showCursorUsage && cursorAvailable && cursorHasData
-  readonly property bool alarming: grokAlarming || (cursorVisible && cursorAlarming)
+  readonly property bool grokBotVisible: showGrokBotUsage && cursorAvailable && grokBotHasData
+  readonly property bool alarming: grokAlarming
+    || (grokBotVisible && grokBotAlarming)
+    || (cursorVisible && cursorAlarming)
+  readonly property string verticalIcon: {
+    if (grokVisible && grokAlarming) return "grok"
+    if (grokBotVisible && grokBotAlarming) return "bot"
+    if (cursorVisible && cursorAlarming) return "cursor"
+    if (grokVisible) return "grok"
+    if (grokBotVisible) return "bot"
+    if (cursorVisible) return "cursor"
+    return ""
+  }
 
   readonly property string scannerPath: String(Qt.resolvedUrl("scripts/grokbar_scanner.py")).replace("file://", "")
   readonly property string cursorScannerPath: String(Qt.resolvedUrl("scripts/cursor_usage_scanner.py")).replace("file://", "")
   // White icon only — MultiEffect recolors it to bar.foreground so it tracks
   // the theme the same way glyph widgets do (baked #fff/#111 never will).
   readonly property url iconSource: Qt.resolvedUrl("assets/grok.svg")
+  readonly property url grokBotIconSource: Qt.resolvedUrl("assets/grok-bot.svg")
   readonly property url cursorIconSource: Qt.resolvedUrl("assets/cursor.svg")
 
   // Shape contract for shell.summon/hide/toggle routing.
@@ -175,6 +226,8 @@ BarWidget {
     var grokAuth = root.resolvePath(root.setting("authPath", ""))
     if (grokAuth !== "")
       command.push("--grok-auth", grokAuth)
+    if (!probe && root.showGrokBotUsage)
+      command.push("--include-sand")
     return command
   }
 
@@ -251,6 +304,15 @@ BarWidget {
     root.cursorUsageStatusText = String(data.usageStatusText || "")
     root.cursorAuthHelpText = String(data.authHelpText || "")
     root.cursorHasData = autoPct >= 0 || apiPct >= 0
+    var botPct = Number(data.grokBotPercent)
+    if (!isFinite(botPct)) botPct = -1
+    root.grokBotPercent = botPct
+    root.grokBotResetAt = String(data.grokBotResetAt || "")
+    root.grokBotPeriodStart = String(data.grokBotPeriodStart || "")
+    root.grokBotTierLabel = String(data.grokBotTierLabel || "")
+    root.grokBotUsageStatusText = String(data.grokBotUsageStatusText || "")
+    root.grokBotAuthHelpText = String(data.grokBotAuthHelpText || "")
+    root.grokBotHasData = botPct >= 0
     root.nowMs = Date.now()
     root.injectPanel()
   }
@@ -266,6 +328,17 @@ BarWidget {
     root.cursorUsageStatusText = ""
     root.cursorAuthHelpText = ""
     root.cursorHasData = false
+    root.clearGrokBotUsage()
+  }
+
+  function clearGrokBotUsage() {
+    root.grokBotPercent = -1
+    root.grokBotResetAt = ""
+    root.grokBotPeriodStart = ""
+    root.grokBotTierLabel = ""
+    root.grokBotUsageStatusText = ""
+    root.grokBotAuthHelpText = ""
+    root.grokBotHasData = false
   }
 
   function probeGrok() {
@@ -290,15 +363,26 @@ BarWidget {
     if (root.showCursorUsage === next) return
     root.persistSettings({ showCursorUsage: next })
     if (next) root.probeCursor()
-    else root.clearCursorUsage()
+    else if (!root.showGrokBotUsage) root.clearCursorUsage()
+  }
+
+  function setShowGrokBotUsage(on) {
+    var next = on === true
+    if (root.showGrokBotUsage === next) return
+    root.persistSettings({ showGrokBotUsage: next })
+    if (next) root.probeCursor()
+    else {
+      root.clearGrokBotUsage()
+      if (!root.showCursorUsage) root.clearCursorUsage()
+    }
   }
 
   function refresh() {
     // Availability first: no auth → hide and skip the API.
     if (root.grokAvailable) root.refreshing = true
-    if (root.showCursorUsage && root.cursorAvailable) root.cursorRefreshing = true
+    if (root.needsCursorSession && root.cursorAvailable) root.cursorRefreshing = true
     root.probeGrok()
-    if (root.showCursorUsage) root.probeCursor()
+    if (root.needsCursorSession) root.probeCursor()
   }
 
   function refreshUsage() {
@@ -353,7 +437,7 @@ BarWidget {
   }
 
   // Missing auth or nothing to report → collapse the slot.
-  visible: grokVisible || cursorVisible
+  visible: grokVisible || grokBotVisible || cursorVisible
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -474,17 +558,17 @@ BarWidget {
     triggeredOnStart: true
     onTriggered: {
       root.probeGrok()
-      if (root.showCursorUsage) root.probeCursor()
+      if (root.needsCursorSession) root.probeCursor()
     }
   }
 
   Timer {
     interval: root.refreshIntervalSec * 1000
-    running: root.grokAvailable || (root.showCursorUsage && root.cursorAvailable)
+    running: root.grokAvailable || (root.needsCursorSession && root.cursorAvailable)
     repeat: true
     onTriggered: {
       root.refreshUsage()
-      if (root.showCursorUsage) root.refreshCursorUsage()
+      if (root.needsCursorSession) root.refreshCursorUsage()
     }
   }
 
@@ -500,7 +584,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     labelVisible: false
-    hasVisualContent: root.grokVisible || root.cursorVisible
+    hasVisualContent: root.grokVisible || root.grokBotVisible || root.cursorVisible
     active: root.alarming
     // Tooltip suppressed because the panel is the detail view.
     tooltipText: ""
@@ -545,6 +629,38 @@ BarWidget {
           visible: root.resetText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.resetText
+          color: root.dim
+          font.family: button.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          renderType: Text.NativeRendering
+        }
+      }
+
+      Row {
+        id: grokBotCluster
+        visible: root.grokBotVisible
+        spacing: Style.space(5)
+
+        ThemedGrokBotIcon {
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Text {
+          visible: root.grokBotText !== ""
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.grokBotText
+          color: root.grokBotOverPace || root.grokBotDisplay >= 0.9
+            ? button.activeColor
+            : button.foreground
+          font.family: button.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          renderType: Text.NativeRendering
+        }
+
+        Text {
+          visible: root.grokBotResetText !== ""
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.grokBotResetText
           color: root.dim
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -598,14 +714,17 @@ BarWidget {
     }
 
     ThemedGrokIcon {
-      visible: button.vertical && root.grokVisible
-        && !(root.cursorVisible && root.cursorAlarming && !root.grokAlarming)
+      visible: button.vertical && root.verticalIcon === "grok"
+      anchors.centerIn: parent
+    }
+
+    ThemedGrokBotIcon {
+      visible: button.vertical && root.verticalIcon === "bot"
       anchors.centerIn: parent
     }
 
     ThemedCursorIcon {
-      visible: button.vertical && root.cursorVisible
-        && (!root.grokVisible || (root.cursorAlarming && !root.grokAlarming))
+      visible: button.vertical && root.verticalIcon === "cursor"
       anchors.centerIn: parent
     }
   }
@@ -635,6 +754,35 @@ BarWidget {
     MultiEffect {
       anchors.fill: icon
       source: icon
+      colorization: 1.0
+      colorizationColor: root.foreground
+    }
+  }
+
+  component ThemedGrokBotIcon: Item {
+    width: Style.bar.iconCanvas
+    height: Style.bar.iconCanvas
+    implicitWidth: width
+    implicitHeight: height
+
+    readonly property int iconSize: Style.bar.iconFont
+
+    Image {
+      id: grokBotIcon
+      anchors.centerIn: parent
+      width: parent.iconSize
+      height: parent.iconSize
+      source: root.grokBotIconSource
+      sourceSize.width: parent.iconSize * 2
+      sourceSize.height: parent.iconSize * 2
+      fillMode: Image.PreserveAspectFit
+      visible: false
+      layer.enabled: true
+    }
+
+    MultiEffect {
+      anchors.fill: grokBotIcon
+      source: grokBotIcon
       colorization: 1.0
       colorizationColor: root.foreground
     }
