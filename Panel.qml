@@ -4,8 +4,9 @@ import qs.Ui
 
 // Usage popup. BarWidget.qml owns the bar slot and scan state.
 // Grok card mirrors grok.com Settings → Usage (weekly pool + products).
-// Cursor card is optional (panel toggle, off by default) and shows two
+// Cursor card is optional (settings page toggle, off by default) and shows two
 // monthly pools + a shared reset when the Cursor account matches Grok.
+// Gear and reload follow the HEY panel: header buttons, flip to settings.
 Panel {
   id: root
   moduleName: "rlimberger.grokbar-omarchy"
@@ -37,8 +38,9 @@ Panel {
   property string grokLoginEmail: ""
   property bool grokIdentityOpen: false
   property bool cursorIdentityOpen: false
+  property bool settingsOpen: false
+  property bool pendingSettingsOpen: false
   property bool refreshing: false
-  property int refreshDotFrame: 0
   property double refreshHoldUntilMs: 0
   readonly property string subscriptionPeriodEnd: hostWidget ? String(hostWidget.subscriptionPeriodEnd || "") : ""
   readonly property bool subscriptionCancelsAtEnd: hostWidget ? hostWidget.subscriptionCancelsAtEnd === true : false
@@ -129,16 +131,11 @@ Panel {
     return root.grokIdentityOpen && grokRebillLabel !== "" ? 1 : 0
   }
 
-  // Grok TUI Working spinner, ASCII stand-ins for ⋅ : ⸬ ⁙ in a fixed slot.
   readonly property bool panelRefreshing: {
     if (root.refreshing) return true
     if (!hostWidget) return false
     if (hostWidget.refreshing === true) return true
     return root.showCursorUsage && hostWidget.cursorRefreshing === true
-  }
-  readonly property string refreshDotsText: {
-    var frames = [".", ":", ".:", "::"]
-    return frames[root.refreshDotFrame % 4]
   }
 
   // "23% of weekly limit used"
@@ -320,10 +317,21 @@ Panel {
   function openFromHotkey() { open() }
 
   function close() {
+    pageFlip.stop()
     root.grokIdentityOpen = false
     root.cursorIdentityOpen = false
+    root.settingsOpen = false
+    root.pendingSettingsOpen = false
+    cardRotation.angle = 0
     setCenterHoverRevealSuppressed(false)
     root.controller.hide()
+  }
+
+  function showSettings(open) {
+    var next = open === true
+    if (root.settingsOpen === next || pageFlip.running) return
+    root.pendingSettingsOpen = next
+    pageFlip.restart()
   }
 
   function toggle() {
@@ -352,7 +360,6 @@ Panel {
   }
 
   onHostWidgetChanged: root.syncRefreshing()
-  onRefreshingChanged: if (refreshing) refreshDotFrame = 0
 
   Connections {
     target: root.hostWidget
@@ -361,11 +368,39 @@ Panel {
     function onCursorRefreshingChanged() { root.syncRefreshing() }
   }
 
-  Timer {
-    interval: 160
-    running: root.panelRefreshing && root.opened
-    repeat: true
-    onTriggered: root.refreshDotFrame = (root.refreshDotFrame + 1) % 4
+  SequentialAnimation {
+    id: pageFlip
+
+    NumberAnimation {
+      target: cardRotation
+      property: "angle"
+      from: 0
+      to: 90
+      duration: 130
+      easing.type: Easing.InQuad
+    }
+    ScriptAction {
+      script: {
+        root.settingsOpen = root.pendingSettingsOpen
+        cardRotation.angle = -90
+      }
+    }
+    NumberAnimation {
+      target: cardRotation
+      property: "angle"
+      from: -90
+      to: 0
+      duration: 170
+      easing.type: Easing.OutQuad
+    }
+    ScriptAction {
+      script: Qt.callLater(function() {
+        if (root.settingsOpen && cursorUsageSetting)
+          cursorUsageSetting.forceActiveFocus()
+        else if (keyCatcher)
+          keyCatcher.forceActiveFocus()
+      })
+    }
   }
 
   Timer {
@@ -386,19 +421,39 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(520))
+    contentHeight: panel.fittedContentHeight(root.settingsOpen
+      ? settingsPage.implicitHeight
+      : usagePage.implicitHeight, Style.space(520))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.settingsOpen
 
-      onActivateRequested: root.refresh()
-      onCloseRequested: root.close()
+      onActivateRequested: if (!root.settingsOpen) root.refresh()
+      onCloseRequested: {
+        if (root.settingsOpen) root.showSettings(false)
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(t) { if (t === "r" || t === "R") root.refresh() }
+      onTextKey: function(t) {
+        if (root.settingsOpen) return
+        if (t === "r" || t === "R") root.refresh()
+        else if (t === "g" || t === "G") root.showSettings(true)
+      }
+
+      transform: Rotation {
+        id: cardRotation
+        origin.x: keyCatcher.width / 2
+        origin.y: keyCatcher.height / 2
+        axis.x: 0
+        axis.y: 1
+        axis.z: 0
+      }
 
       Column {
-        id: column
+        id: usagePage
+        visible: !root.settingsOpen
         width: parent.width
         spacing: Style.space(12)
 
@@ -419,18 +474,14 @@ Panel {
           accountName: root.grokLoginName
           accountEmail: root.grokLoginEmail
           identityVisible: root.grokIdentityOpen
-          spinning: root.panelRefreshing
-          spinnerGlyph: root.refreshDotsText
+          headerActionsVisible: true
+          refreshing: root.panelRefreshing
           foreground: root.foreground
           dim: root.dim
           fontFamily: root.fontFamily
-
-          MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.grokIdentityOpen = !root.grokIdentityOpen
-          }
+          onIdentityClicked: root.grokIdentityOpen = !root.grokIdentityOpen
+          onSettingsClicked: root.showSettings(true)
+          onRefreshClicked: root.refresh()
         }
 
         BorderSurface {
@@ -551,22 +602,7 @@ Panel {
         }
 
         PanelSeparator {
-          visible: grokCard.visible
-          foreground: root.foreground
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Cursor usage"
-          description: "Show Cursor monthly usage on the bar when the Cursor account matches Grok."
-          checked: root.showCursorUsage
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.setShowCursorUsage(!root.showCursorUsage)
-        }
-
-        PanelSeparator {
-          visible: cursorCard.visible
+          visible: grokCard.visible && cursorCard.visible
           foreground: root.foreground
         }
 
@@ -586,16 +622,14 @@ Panel {
             accountName: root.cursorLoginName
             accountEmail: root.cursorLoginEmail
             identityVisible: root.cursorIdentityOpen
+            headerActionsVisible: !grokCard.visible
+            refreshing: root.panelRefreshing
             foreground: root.foreground
             dim: root.dim
             fontFamily: root.fontFamily
-
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.cursorIdentityOpen = !root.cursorIdentityOpen
-            }
+            onIdentityClicked: root.cursorIdentityOpen = !root.cursorIdentityOpen
+            onSettingsClicked: root.showSettings(true)
+            onRefreshClicked: root.refresh()
           }
 
           BorderSurface {
@@ -684,11 +718,74 @@ Panel {
           }
         }
       }
+
+      Column {
+        id: settingsPage
+        visible: root.settingsOpen
+        width: parent.width
+        spacing: Style.space(12)
+        Keys.priority: Keys.AfterItem
+        Keys.onEscapePressed: function(event) {
+          root.showSettings(false)
+          event.accepted = true
+        }
+
+        Item {
+          width: parent.width
+          implicitHeight: Math.max(settingsBackButton.implicitHeight, settingsLabels.implicitHeight)
+
+          PanelActionButton {
+            id: settingsBackButton
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰁍"
+            tooltipText: "Back to usage"
+            foreground: root.foreground
+            focusable: true
+            fontFamily: root.fontFamily
+            onClicked: root.showSettings(false)
+          }
+
+          Column {
+            id: settingsLabels
+            anchors.left: settingsBackButton.right
+            anchors.leftMargin: Style.space(10)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(3)
+
+            Text {
+              text: "SETTINGS"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.foreground
+        }
+
+        Toggle {
+          id: cursorUsageSetting
+          width: parent.width
+          label: "Cursor usage"
+          description: "Show Cursor monthly usage on the bar when the Cursor account matches Grok."
+          checked: root.showCursorUsage
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.setShowCursorUsage(!root.showCursorUsage)
+        }
+      }
     }
   }
 
   // Icon is centered on the title row so the plan name lines up with the logo.
-  // Renewal, name, and email keep their slots and only change opacity.
+  // Gear and reload stay on the title row (HEY's trailing actions). Renewal
+  // sits on the subtitle row, which runs under the buttons so they cannot
+  // clip "Renews …".
   // Plan name, meta, and account identity are API strings: PlainText so
   // QML AutoText cannot treat crafted <img src> markup as a resource fetch.
   component PlanHeader: Item {
@@ -700,13 +797,24 @@ Panel {
     property string accountName: ""
     property string accountEmail: ""
     property bool identityVisible: false
-    property bool spinning: false
-    property string spinnerGlyph: ""
+    property bool headerActionsVisible: false
+    property bool refreshing: false
     property color foreground: Color.foreground
     property color dim: Color.foreground
     property string fontFamily: Style.font.family
 
-    implicitHeight: Math.max(iconBox.height, titleCol.implicitHeight, trail.implicitHeight)
+    signal identityClicked()
+    signal settingsClicked()
+    signal refreshClicked()
+
+    readonly property bool showIdentity: identityVisible
+      && (accountName !== "" || accountEmail !== "")
+    readonly property string nameLine: accountName !== "" ? accountName : accountEmail
+    readonly property string emailLine: accountName !== "" ? accountEmail : ""
+
+    implicitHeight: Math.max(iconBox.height, titleText.height + Style.space(2)
+      + Math.max(metaText.implicitHeight, emailText.visible ? emailText.implicitHeight : 0),
+      refreshButton.implicitHeight)
 
     Item {
       id: iconBox
@@ -726,129 +834,127 @@ Panel {
       }
     }
 
-    Column {
-      id: titleCol
+    Text {
+      id: titleText
       anchors.left: iconBox.right
       anchors.leftMargin: Style.space(14)
-      anchors.right: trail.left
+      anchors.right: nameText.visible ? nameText.left : (hdr.headerActionsVisible ? settingsButton.left : parent.right)
       anchors.rightMargin: Style.space(12)
       anchors.top: parent.top
-      spacing: Style.space(2)
-
-      Text {
-        id: titleText
-        width: parent.width
-        text: hdr.title
-        textFormat: Text.PlainText
-        color: hdr.foreground
-        font.family: hdr.fontFamily
-        font.pixelSize: Style.font.title
-        font.bold: true
-        elide: Text.ElideRight
-      }
-
-      Text {
-        width: parent.width
-        text: hdr.meta !== "" ? hdr.meta.toUpperCase() : "\u00A0"
-        textFormat: Text.PlainText
-        opacity: hdr.metaOpacity
-        color: hdr.dim
-        font.family: hdr.fontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
-        font.letterSpacing: 1.2
-        elide: Text.ElideRight
-      }
+      text: hdr.title
+      textFormat: Text.PlainText
+      color: hdr.foreground
+      font.family: hdr.fontFamily
+      font.pixelSize: Style.font.title
+      font.bold: true
+      elide: Text.ElideRight
     }
 
-    AccountTrail {
-      id: trail
-      anchors.right: parent.right
+    Text {
+      id: metaText
+      anchors.left: titleText.left
+      anchors.right: emailText.visible ? emailText.left : parent.right
+      anchors.rightMargin: emailText.visible ? Style.space(10) : 0
+      anchors.top: titleText.bottom
+      anchors.topMargin: Style.space(2)
+      text: hdr.meta !== "" ? hdr.meta.toUpperCase() : "\u00A0"
+      textFormat: Text.PlainText
+      opacity: hdr.metaOpacity
+      color: hdr.dim
+      font.family: hdr.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      font.letterSpacing: 1.2
+      wrapMode: Text.NoWrap
+      elide: Text.ElideRight
+    }
+
+    MouseArea {
+      anchors.left: parent.left
+      anchors.right: nameText.visible ? nameText.left : (hdr.headerActionsVisible ? settingsButton.left : parent.right)
       anchors.top: parent.top
-      accountName: hdr.accountName
-      accountEmail: hdr.accountEmail
-      identityVisible: hdr.identityVisible
-      spinning: hdr.spinning
-      spinnerGlyph: hdr.spinnerGlyph
+      anchors.bottom: parent.bottom
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: hdr.identityClicked()
+    }
+
+    Text {
+      id: nameText
+      visible: hdr.showIdentity && hdr.nameLine !== ""
+      anchors.right: hdr.headerActionsVisible ? settingsButton.left : parent.right
+      anchors.rightMargin: hdr.headerActionsVisible ? Style.space(8) : 0
+      anchors.verticalCenter: titleText.verticalCenter
+      z: 1
+      width: Math.min(implicitWidth, Math.max(Style.space(80), parent.width * 0.38))
+      text: hdr.nameLine
+      textFormat: Text.PlainText
+      color: hdr.foreground
+      font.family: hdr.fontFamily
+      font.pixelSize: Style.font.title
+      font.bold: true
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
+
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: hdr.identityClicked()
+      }
+    }
+
+    Text {
+      id: emailText
+      visible: hdr.showIdentity && hdr.emailLine !== ""
+      anchors.right: parent.right
+      anchors.top: titleText.bottom
+      anchors.topMargin: Style.space(2)
+      z: 1
+      width: Math.min(implicitWidth, parent.width)
+      text: hdr.emailLine
+      textFormat: Text.PlainText
+      color: hdr.dim
+      font.family: hdr.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      font.letterSpacing: 1.2
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
+
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: hdr.identityClicked()
+      }
+    }
+
+    PanelActionButton {
+      id: settingsButton
+      visible: hdr.headerActionsVisible
+      anchors.right: refreshButton.left
+      anchors.rightMargin: Style.space(4)
+      anchors.verticalCenter: titleText.verticalCenter
+      z: 1
+      iconText: "󰒓"
+      tooltipText: "Grokbar settings"
       foreground: hdr.foreground
-      dim: hdr.dim
       fontFamily: hdr.fontFamily
-    }
-  }
-
-  // Name sits on the title row; email on the reserved subtitle row.
-  // Spinner is a fixed-width ASCII slot on the title row.
-  component AccountTrail: Row {
-    id: trail
-    property string accountName: ""
-    property string accountEmail: ""
-    property bool identityVisible: false
-    property bool spinning: false
-    property string spinnerGlyph: ""
-    property color foreground: Color.foreground
-    property color dim: Color.foreground
-    property string fontFamily: Style.font.family
-    spacing: Style.space(10)
-
-    readonly property string titleText: accountName !== "" ? accountName : accountEmail
-    readonly property string subtitleText: accountName !== "" ? accountEmail : ""
-    readonly property string spinnerFont: "monospace"
-
-    Column {
-      spacing: Style.space(2)
-      opacity: trail.identityVisible && trail.titleText !== "" ? 1 : 0
-
-      Text {
-        id: nameText
-        text: trail.titleText !== "" ? trail.titleText : " "
-        textFormat: Text.PlainText
-        color: trail.foreground
-        font.family: trail.fontFamily
-        font.pixelSize: Style.font.title
-        font.bold: true
-        horizontalAlignment: Text.AlignRight
-        width: Math.max(implicitWidth, subText.implicitWidth)
-        elide: Text.ElideRight
-      }
-
-      Text {
-        id: subText
-        text: trail.subtitleText !== "" ? trail.subtitleText : " "
-        textFormat: Text.PlainText
-        color: trail.dim
-        font.family: trail.fontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
-        font.letterSpacing: 1.2
-        horizontalAlignment: Text.AlignRight
-        width: parent.width
-        elide: Text.ElideRight
-      }
+      onClicked: hdr.settingsClicked()
     }
 
-    Item {
-      width: spinnerMeasure.implicitWidth
-      height: nameText.height
-      opacity: trail.spinning ? 1 : 0
-
-      Text {
-        id: spinnerMeasure
-        visible: false
-        text: "::"
-        font.family: trail.spinnerFont
-        font.pixelSize: Style.font.body
-        font.bold: true
-      }
-
-      Text {
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.verticalCenter: parent.verticalCenter
-        text: trail.spinnerGlyph
-        color: Color.accent
-        font.family: trail.spinnerFont
-        font.pixelSize: Style.font.body
-        font.bold: true
-      }
+    PanelActionButton {
+      id: refreshButton
+      visible: hdr.headerActionsVisible
+      anchors.right: parent.right
+      anchors.verticalCenter: titleText.verticalCenter
+      z: 1
+      iconText: hdr.refreshing ? "󰑓" : "󰑐"
+      foreground: hdr.foreground
+      fontFamily: hdr.fontFamily
+      enabled: !hdr.refreshing
+      onClicked: hdr.refreshClicked()
     }
   }
 

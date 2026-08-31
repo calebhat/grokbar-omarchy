@@ -5,7 +5,7 @@ Omarchy bar widget for SuperGrok weekly usage, with optional Cursor monthly usag
 ![Grokbar usage panel](preview.png)
 
 - **Grok** — icon, weekly pool percent, and reset (`5d` / `12h`)
-- **Cursor** — off by default; enable from the panel to show Cursor Models %, Other Models %, and reset
+- **Cursor** — off by default; enable from panel settings to show Cursor Models %, Other Models %, and reset
 
 Left click opens the usage panel. Right click refreshes. The widget hides when there is nothing to show.
 
@@ -31,10 +31,10 @@ Requires **Python 3** on `PATH` (stdlib only; no extra packages). Sign in with t
 ## Usage
 
 - Bar: left click = panel, right click = refresh
-- Panel: `r` or Enter refresh, Tab neighboring panel, Esc close
+- Panel: gear (or `g`) opens settings, reload button (or `r` / Enter) refreshes, Tab neighboring panel, Esc close
 - Click the SuperGrok or Cursor title to show account name, email, and renewal
-- While usage refreshes, the panel shows a fixed-width ASCII spinner (`.`, `:`, `.:`, `::`)
-- **Cursor usage** toggle in the panel (off by default)
+- The reload icon spins while usage refreshes
+- Gear flips to settings for the **Cursor usage** toggle (off by default). Back or Esc returns to usage.
 
 ## Configure
 

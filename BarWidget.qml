@@ -6,7 +6,7 @@ import qs.Commons
 import qs.Ui
 
 // Bar widget: Grok weekly pool, plus optional Cursor monthly pools.
-// Cursor is off by default; the panel toggle (showCursorUsage) turns it on.
+// Cursor is off by default; the panel settings toggle (showCursorUsage) turns it on.
 // Each provider is icon + % + reset (5d / 12h). Cursor also shows Other Models %.
 // Self-hides a provider with no usable session or period-pool data.
 // Left click toggles the panel; right click refreshes.

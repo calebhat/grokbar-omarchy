@@ -34,7 +34,7 @@
         "key": "showCursorUsage",
         "type": "boolean",
         "label": "Show Cursor usage",
-        "description": "Show Cursor monthly pools on the bar. Off by default; also toggled from the usage panel.",
+        "description": "Show Cursor monthly pools on the bar. Off by default; also toggled from panel settings.",
         "defaultValue": false
       },
       {
