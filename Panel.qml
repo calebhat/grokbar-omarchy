@@ -4,9 +4,10 @@ import qs.Ui
 
 // Usage popup. BarWidget.qml owns the bar slot and scan state.
 // Grok card mirrors grok.com Settings → Usage (weekly pool + products).
-// Cursor and Grok Bot cards are optional (settings page toggles, off by
-// default). Cursor shows two monthly pools; Grok Bot shows its weekly pool.
-// Both require the Cursor account to match Grok.
+// Cursor, Grok Bot, and Claude cards are optional (settings page toggles,
+// off by default). Cursor shows two monthly pools; Grok Bot shows its weekly
+// pool; Claude shows session, weekly, and any model-scoped windows.
+// Cursor and Grok Bot require the Cursor account to match Grok.
 // Gear and reload follow the HEY panel: header buttons, flip to settings.
 Panel {
   id: root
@@ -40,6 +41,7 @@ Panel {
   property bool grokIdentityOpen: false
   property bool grokBotIdentityOpen: false
   property bool cursorIdentityOpen: false
+  property bool claudeIdentityOpen: false
   property bool settingsOpen: false
   property bool pendingSettingsOpen: false
   property bool refreshing: false
@@ -58,6 +60,9 @@ Panel {
   readonly property bool showGrokBotUsage: hostWidget
     ? hostWidget.showGrokBotUsage === true
     : !!(settings && settings.showGrokBotUsage === true)
+  readonly property bool showClaudeUsage: hostWidget
+    ? hostWidget.showClaudeUsage === true
+    : !!(settings && settings.showClaudeUsage === true)
   readonly property real cursorAutoPercent: hostWidget ? Number(hostWidget.cursorAutoPercent) : -1
   readonly property real cursorApiPercent: hostWidget ? Number(hostWidget.cursorApiPercent) : -1
   readonly property string cursorResetAt: hostWidget ? String(hostWidget.cursorResetAt || "") : ""
@@ -75,6 +80,14 @@ Panel {
   readonly property string grokBotUsageStatusText: hostWidget ? String(hostWidget.grokBotUsageStatusText || "") : ""
   readonly property string grokBotAuthHelpText: hostWidget ? String(hostWidget.grokBotAuthHelpText || "") : ""
   readonly property bool grokBotHasData: grokBotPercent >= 0
+  readonly property real claudeSessionPercent: hostWidget ? Number(hostWidget.claudeSessionPercent) : -1
+  readonly property real claudeWeeklyPercent: hostWidget ? Number(hostWidget.claudeWeeklyPercent) : -1
+  readonly property string claudeSessionResetAt: hostWidget ? String(hostWidget.claudeSessionResetAt || "") : ""
+  readonly property string claudeWeeklyResetAt: hostWidget ? String(hostWidget.claudeWeeklyResetAt || "") : ""
+  readonly property string claudeTierLabel: hostWidget ? String(hostWidget.claudeTierLabel || "") : ""
+  readonly property string claudeUsageStatusText: hostWidget ? String(hostWidget.claudeUsageStatusText || "") : ""
+  readonly property string claudeAuthHelpText: hostWidget ? String(hostWidget.claudeAuthHelpText || "") : ""
+  readonly property bool claudeHasData: hostWidget ? hostWidget.claudeHasData === true : false
 
   // TEMP QA hook: force over-pace styling (leave false in production).
   readonly property bool simulateOverPace: false
@@ -147,8 +160,10 @@ Panel {
     if (root.refreshing) return true
     if (!hostWidget) return false
     if (hostWidget.refreshing === true) return true
-    return (root.showCursorUsage || root.showGrokBotUsage)
-      && hostWidget.cursorRefreshing === true
+    if ((root.showCursorUsage || root.showGrokBotUsage)
+        && hostWidget.cursorRefreshing === true)
+      return true
+    return root.showClaudeUsage && hostWidget.claudeRefreshing === true
   }
 
   // "23% of weekly limit used"
@@ -248,16 +263,46 @@ Panel {
     ? Qt.resolvedUrl("assets/grok-bot-light.svg")
     : Qt.resolvedUrl("assets/grok-bot.svg")
 
-  // Segment shades of the pace-aware fill color (accent under, urgent over).
-  readonly property var segmentPalette: {
-    var base = root.usageFillColor
-    return [
-      base,
-      Qt.rgba(base.r, base.g, base.b, 0.72),
-      Qt.rgba(base.r, base.g, base.b, 0.50),
-      Qt.rgba(base.r, base.g, base.b, 0.86),
-      Qt.rgba(base.r, base.g, base.b, 0.60)
-    ]
+  readonly property var claudePools: {
+    if (hostWidget && hostWidget.claudeDisplayLimits)
+      return hostWidget.claudeDisplayLimits
+    return []
+  }
+  readonly property string claudeTitle: claudeTierLabel !== "" ? claudeTierLabel : "Claude"
+  readonly property string claudeResetsLabel: {
+    if (!hostWidget) return root.formatResetsLabel(claudeSessionResetAt || claudeWeeklyResetAt)
+    return root.formatResetsLabel(String(hostWidget.claudeResetAt || claudeSessionResetAt || claudeWeeklyResetAt))
+  }
+  readonly property bool claudeAlarming: {
+    var items = root.claudePools
+    for (var i = 0; i < items.length; i++) {
+      if (Number(items[i].percent) >= 0.9 || items[i].overPace === true)
+        return true
+    }
+    return false
+  }
+  readonly property url claudeIconSource: colorLuminance(surface) >= 0.5
+    ? Qt.resolvedUrl("assets/claude-light.svg")
+    : Qt.resolvedUrl("assets/claude.svg")
+
+  function claudeWindowUsedLabel(item) {
+    var title = String((item && item.title) || "Limit")
+    var pct = Number(item && item.percent)
+    var used = isFinite(pct) && pct >= 0 ? Math.round(pct * 100) + "%" : "—"
+    var kind = String((item && item.kind) || "")
+    var window = kind === "session" ? "5-hour" : (kind === "month" ? "monthly" : "weekly")
+    return title + " · " + used + " of " + window + " limit used"
+  }
+
+  // Product-slice opacities of a pace-aware fill (accent under, urgent over).
+  // Bind the base color in the caller (`shadeFill(root.usageFillColor, i)`)
+  // so QML tracks it; a cached palette array does not.
+  function shadeFill(base, index) {
+    var alphas = [1.0, 0.72, 0.50, 0.86, 0.60]
+    var i = Math.floor(Number(index))
+    if (!isFinite(i) || i < 0) i = 0
+    var a = alphas[i % alphas.length]
+    return Qt.rgba(base.r, base.g, base.b, a)
   }
 
   readonly property url iconSource: colorLuminance(surface) >= 0.5
@@ -328,12 +373,6 @@ Panel {
       + ", " + when.getFullYear()
   }
 
-  function segmentColor(index) {
-    var palette = root.segmentPalette
-    if (!palette || !palette.length) return root.usageFillColor
-    return palette[index % palette.length]
-  }
-
   function setCenterHoverRevealSuppressed(value) {
     if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
@@ -345,6 +384,7 @@ Panel {
       live = hostWidget.refreshing === true
         || ((root.showCursorUsage || root.showGrokBotUsage)
           && hostWidget.cursorRefreshing === true)
+        || (root.showClaudeUsage && hostWidget.claudeRefreshing === true)
     }
     if (!live && Date.now() < root.refreshHoldUntilMs)
       live = true
@@ -366,6 +406,7 @@ Panel {
     root.grokIdentityOpen = false
     root.grokBotIdentityOpen = false
     root.cursorIdentityOpen = false
+    root.claudeIdentityOpen = false
     root.settingsOpen = false
     root.pendingSettingsOpen = false
     cardRotation.angle = 0
@@ -404,6 +445,11 @@ Panel {
       hostWidget.setShowGrokBotUsage(on)
   }
 
+  function setShowClaudeUsage(on) {
+    if (hostWidget && typeof hostWidget.setShowClaudeUsage === "function")
+      hostWidget.setShowClaudeUsage(on)
+  }
+
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -417,6 +463,7 @@ Panel {
     enabled: root.hostWidget != null
     function onRefreshingChanged() { root.syncRefreshing() }
     function onCursorRefreshingChanged() { root.syncRefreshing() }
+    function onClaudeRefreshingChanged() { root.syncRefreshing() }
   }
 
   SequentialAnimation {
@@ -474,7 +521,7 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(400))
     contentHeight: panel.fittedContentHeight(root.settingsOpen
       ? settingsPage.implicitHeight
-      : usagePage.implicitHeight, Style.space(520))
+      : usagePage.implicitHeight, Style.space(780))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -634,7 +681,7 @@ Panel {
                   height: Style.space(6)
                   radius: width / 2
                   anchors.verticalCenter: parent.verticalCenter
-                  color: root.segmentColor(index)
+                  color: root.shadeFill(root.usageFillColor, index)
                 }
 
                 Text {
@@ -653,7 +700,7 @@ Panel {
         }
 
         PanelSeparator {
-          visible: grokCard.visible && (grokBotCard.visible || cursorCard.visible)
+          visible: grokCard.visible && (grokBotCard.visible || cursorCard.visible || claudeCard.visible)
           foreground: root.foreground
         }
 
@@ -756,7 +803,7 @@ Panel {
         }
 
         PanelSeparator {
-          visible: grokBotCard.visible && cursorCard.visible
+          visible: grokBotCard.visible && (cursorCard.visible || claudeCard.visible)
           foreground: root.foreground
         }
 
@@ -871,6 +918,122 @@ Panel {
             }
           }
         }
+
+        PanelSeparator {
+          visible: cursorCard.visible && claudeCard.visible
+          foreground: root.foreground
+        }
+
+        Column {
+          id: claudeCard
+          visible: root.showClaudeUsage && (root.claudeHasData || root.claudeUsageStatusText !== "")
+          width: parent.width
+          spacing: Style.space(12)
+
+          PlanHeader {
+            id: claudeHeader
+            width: parent.width
+            title: root.claudeTitle
+            meta: "\u00A0"
+            metaOpacity: 0
+            iconSource: root.claudeIconSource
+            accountName: ""
+            accountEmail: ""
+            identityVisible: root.claudeIdentityOpen
+            headerActionsVisible: !grokCard.visible && !grokBotCard.visible && !cursorCard.visible
+            refreshing: root.panelRefreshing
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onIdentityClicked: root.claudeIdentityOpen = !root.claudeIdentityOpen
+            onSettingsClicked: root.showSettings(true)
+            onRefreshClicked: root.refresh()
+          }
+
+          BorderSurface {
+            visible: root.claudeUsageStatusText !== ""
+            width: parent.width
+            implicitHeight: claudeStatusText.implicitHeight + Style.spacing.xl * 2
+            color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
+            borderSpec: Border.flat(Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35), 1)
+            radius: Style.cornerRadius
+
+            Text {
+              id: claudeStatusText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(12)
+              anchors.rightMargin: Style.space(12)
+              text: root.claudeAuthHelpText !== "" ? root.claudeAuthHelpText : root.claudeUsageStatusText
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          Column {
+            visible: root.claudeHasData
+            width: parent.width
+            spacing: Style.space(10)
+
+            Repeater {
+              model: root.claudePools
+
+              Column {
+                required property var modelData
+                required property int index
+                width: claudeCard.width
+                spacing: Style.space(6)
+
+                Item {
+                  width: parent.width
+                  implicitHeight: Math.max(claudePoolUsedText.implicitHeight, claudePoolResetText.implicitHeight)
+
+                  Text {
+                    id: claudePoolUsedText
+                    width: parent.width
+                      - (claudePoolResetText.visible ? claudePoolResetText.implicitWidth + Style.space(10) : 0)
+                    text: root.claudeWindowUsedLabel(modelData)
+                    color: (modelData.overPace === true || Number(modelData.percent) >= 0.9)
+                      ? root.urgent : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    id: claudePoolResetText
+                    visible: root.formatResetsLabel(modelData.resetAt) !== ""
+                    text: root.formatResetsLabel(modelData.resetAt)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideLeft
+                    horizontalAlignment: Text.AlignRight
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                }
+
+                SegmentedMeter {
+                  width: parent.width
+                  segments: []
+                  totalPercent: Number(modelData.percent)
+                  expectedPace: Number(modelData.expectedPace)
+                  overPace: modelData.overPace === true
+                  fillColor: modelData.overPace ? root.overPaceColor : root.underPaceColor
+                  paceMarkerColor: root.paceMarkerColor
+                  dayCount: Number(modelData.dayCount) || 0
+                }
+              }
+            }
+          }
+        }
       }
 
       Column {
@@ -942,6 +1105,17 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           onClicked: root.setShowGrokBotUsage(!root.showGrokBotUsage)
+        }
+
+        Toggle {
+          id: claudeUsageSetting
+          width: parent.width
+          label: "Claude usage"
+          description: "Show Claude Code session and weekly usage on the bar."
+          checked: root.showClaudeUsage
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.setShowClaudeUsage(!root.showClaudeUsage)
         }
       }
     }
@@ -1125,14 +1299,15 @@ Panel {
 
   // Full-width track with product slices left-to-right (pool fractions).
   // Day ticks + expected-pace marker (elapsed / period).
-  // Fill uses Color.accent under pace, Color.urgent over pace.
+  // Fill is accent while usage is behind the pace marker, urgent once it
+  // crosses — compared here so the color cannot drift from the bar.
   component SegmentedMeter: Item {
     id: meter
     property var segments: []
     property real totalPercent: -1
     property real expectedPace: -1
     property bool overPace: false
-    property color fillColor: root.usageFillColor
+    property color fillColor: root.underPaceColor
     property color paceMarkerColor: root.paceMarkerColor
     // SuperGrok weekly pool = 7 calendar days.
     property int dayCount: 7
@@ -1159,6 +1334,15 @@ Panel {
       if (!isFinite(p) || p < 0) return -1
       return root.clamp(p, 0, 1)
     }
+
+    // Visual truth: the used fill has crossed the expected-pace marker.
+    readonly property bool pastPace: {
+      if (meter.overPace === true) return true
+      var used = meter.usedFraction
+      var pace = meter.paceFraction
+      return pace >= 0 && used > pace + 0.0001
+    }
+    readonly property color usedFill: meter.pastPace ? root.overPaceColor : meter.fillColor
 
     // Day ticks: fainter on empty track, inverted/higher-contrast over used fill.
     readonly property color dayMarkerOnTrack: Qt.rgba(
@@ -1197,7 +1381,7 @@ Panel {
               return fillRow.width * (pct / used)
             }
             height: parent.height
-            color: root.segmentColor(index)
+            color: root.shadeFill(meter.usedFill, index)
           }
         }
 
@@ -1206,7 +1390,7 @@ Panel {
           visible: (!meter.segments || meter.segments.length === 0) && meter.usedFraction > 0
           width: fillRow.width
           height: parent.height
-          color: meter.fillColor
+          color: meter.usedFill
         }
       }
 

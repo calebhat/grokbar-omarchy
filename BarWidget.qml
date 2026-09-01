@@ -5,10 +5,11 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Bar widget: Grok weekly pool, plus optional Cursor monthly pools and
-// optional Grok Bot weekly pool. Both extras are off by default; panel
-// settings toggles (showCursorUsage / showGrokBotUsage) turn them on.
-// Each provider is icon + % + reset (5d / 12h). Cursor also shows Other Models %.
+// Bar widget: Grok weekly pool, plus optional Cursor monthly pools,
+// optional Grok Bot weekly pool, and optional Claude Code windows.
+// Extras are off by default; panel settings toggles turn them on.
+// Each provider is icon + % + reset (5d / 12h). Cursor also shows Other
+// Models %. Claude shows session % and weekly %.
 // Self-hides a provider with no usable session or period-pool data.
 // Left click toggles the panel; right click refreshes.
 BarWidget {
@@ -60,12 +61,30 @@ BarWidget {
   property string grokBotAuthHelpText: ""
   property bool grokBotHasData: false
 
+  // Claude Code (local ~/.claude OAuth; session + weekly + scoped windows).
+  property real claudeSessionPercent: -1
+  property real claudeWeeklyPercent: -1
+  property string claudeSessionResetAt: ""
+  property string claudeSessionPeriodStart: ""
+  property string claudeWeeklyResetAt: ""
+  property string claudeWeeklyPeriodStart: ""
+  property string claudeTierLabel: ""
+  property string claudeUsageStatusText: ""
+  property string claudeAuthHelpText: ""
+  property var claudeLimits: []
+  property bool claudeHasData: false
+  property bool claudeRefreshing: false
+  property bool claudeAvailable: false
+
   readonly property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 300)) || 300)
   // Off unless the panel toggle (or shell.json) turns it on. Bind to
   // `settings` directly so persistSettings() redraws without a reload.
   readonly property bool showCursorUsage: !!(settings && settings.showCursorUsage === true)
   readonly property bool showGrokBotUsage: !!(settings && settings.showGrokBotUsage === true)
+  readonly property bool showClaudeUsage: !!(settings && settings.showClaudeUsage === true)
   readonly property bool needsCursorSession: showCursorUsage || showGrokBotUsage
+  readonly property int sessionMs: 5 * 3600 * 1000
+  readonly property int weekMs: 7 * 24 * 3600 * 1000
 
   // TEMP QA hook: force over-pace styling (leave false in production).
   readonly property bool simulateOverPace: false
@@ -165,29 +184,125 @@ BarWidget {
     return isFinite(ms) ? root.formatBarDuration(ms) : ""
   }
 
+  readonly property real claudeSessionExpectedPace: root.claudePaceFor(
+    claudeSessionPeriodStart, claudeSessionResetAt, root.sessionMs)
+  readonly property real claudeWeeklyExpectedPace: root.claudePaceFor(
+    claudeWeeklyPeriodStart, claudeWeeklyResetAt, root.weekMs)
+
+  readonly property real claudeSessionDisplay: {
+    if (!root.simulateOverPace || !(claudeSessionPercent >= 0) || !(claudeSessionExpectedPace >= 0))
+      return claudeSessionPercent
+    return Math.max(0, Math.min(1, Math.max(claudeSessionPercent, claudeSessionExpectedPace + 0.15)))
+  }
+  readonly property real claudeWeeklyDisplay: {
+    if (!root.simulateOverPace || !(claudeWeeklyPercent >= 0) || !(claudeWeeklyExpectedPace >= 0))
+      return claudeWeeklyPercent
+    return Math.max(0, Math.min(1, Math.max(claudeWeeklyPercent, claudeWeeklyExpectedPace + 0.15)))
+  }
+  readonly property bool claudeSessionOverPace: claudeSessionExpectedPace >= 0 && claudeSessionDisplay >= 0
+    && claudeSessionDisplay > claudeSessionExpectedPace + 0.0001
+  readonly property bool claudeWeeklyOverPace: claudeWeeklyExpectedPace >= 0 && claudeWeeklyDisplay >= 0
+    && claudeWeeklyDisplay > claudeWeeklyExpectedPace + 0.0001
+  readonly property var claudeDisplayLimits: {
+    var raw = root.claudeLimits
+    var out = []
+    if (!raw || !raw.length) {
+      if (claudeSessionDisplay >= 0)
+        out.push({
+          title: "Session", percent: claudeSessionDisplay, resetAt: claudeSessionResetAt,
+          periodStart: claudeSessionPeriodStart, kind: "session", dayCount: 0,
+          overPace: claudeSessionOverPace
+        })
+      if (claudeWeeklyDisplay >= 0)
+        out.push({
+          title: "Weekly", percent: claudeWeeklyDisplay, resetAt: claudeWeeklyResetAt,
+          periodStart: claudeWeeklyPeriodStart, kind: "week", dayCount: 7,
+          overPace: claudeWeeklyOverPace
+        })
+      return out
+    }
+    for (var i = 0; i < raw.length; i++) {
+      var item = raw[i]
+      if (!item) continue
+      var pct = Number(item.percent)
+      if (!isFinite(pct) || pct < 0) continue
+      var kind = String(item.kind || "")
+      var fallback = kind === "session" ? root.sessionMs : (kind === "month" ? 30 * 24 * 3600 * 1000 : root.weekMs)
+      var pace = root.claudePaceFor(item.periodStart, item.resetAt, fallback)
+      var over = pace >= 0 && pct > pace + 0.0001
+      out.push({
+        title: String(item.title || "Limit"),
+        percent: pct,
+        resetAt: String(item.resetAt || ""),
+        periodStart: String(item.periodStart || ""),
+        kind: kind,
+        dayCount: Number(item.dayCount) || (kind === "week" ? 7 : 0),
+        overPace: over,
+        expectedPace: pace
+      })
+    }
+    return out
+  }
+  readonly property bool claudeAlarming: {
+    var items = root.claudeDisplayLimits
+    for (var i = 0; i < items.length; i++) {
+      if (Number(items[i].percent) >= 0.9 || items[i].overPace === true)
+        return true
+    }
+    return false
+  }
+  readonly property string claudeSessionText: claudeSessionDisplay >= 0 ? Math.round(claudeSessionDisplay * 100) + "%" : ""
+  readonly property string claudeWeeklyText: claudeWeeklyDisplay >= 0 ? Math.round(claudeWeeklyDisplay * 100) + "%" : ""
+  readonly property string claudeResetAt: {
+    var soonest = ""
+    var soonestMs = NaN
+    var items = root.claudeDisplayLimits
+    for (var i = 0; i < items.length; i++) {
+      var iso = String(items[i].resetAt || "")
+      var t = root.parseTimeMs(iso)
+      if (!(t > 0)) continue
+      if (!isFinite(soonestMs) || t < soonestMs) {
+        soonestMs = t
+        soonest = iso
+      }
+    }
+    return soonest
+  }
+  readonly property string claudeResetText: {
+    if (claudeResetAt === "") return ""
+    var ms = new Date(claudeResetAt).getTime() - root.nowMs
+    return isFinite(ms) ? root.formatBarDuration(ms) : ""
+  }
+
   readonly property bool grokVisible: grokAvailable && hasData
   readonly property bool cursorVisible: showCursorUsage && cursorAvailable && cursorHasData
   readonly property bool grokBotVisible: showGrokBotUsage && cursorAvailable && grokBotHasData
+  readonly property bool claudeVisible: showClaudeUsage && claudeAvailable && claudeHasData
   readonly property bool alarming: grokAlarming
     || (grokBotVisible && grokBotAlarming)
     || (cursorVisible && cursorAlarming)
+    || (claudeVisible && claudeAlarming)
   readonly property string verticalIcon: {
     if (grokVisible && grokAlarming) return "grok"
     if (grokBotVisible && grokBotAlarming) return "bot"
     if (cursorVisible && cursorAlarming) return "cursor"
+    if (claudeVisible && claudeAlarming) return "claude"
     if (grokVisible) return "grok"
     if (grokBotVisible) return "bot"
     if (cursorVisible) return "cursor"
+    if (claudeVisible) return "claude"
     return ""
   }
 
   readonly property string scannerPath: String(Qt.resolvedUrl("scripts/grokbar_scanner.py")).replace("file://", "")
   readonly property string cursorScannerPath: String(Qt.resolvedUrl("scripts/cursor_usage_scanner.py")).replace("file://", "")
+  readonly property string claudeScannerPath: String(Qt.resolvedUrl("scripts/claude_usage_scanner.py")).replace("file://", "")
   // White icon only — MultiEffect recolors it to bar.foreground so it tracks
   // the theme the same way glyph widgets do (baked #fff/#111 never will).
   readonly property url iconSource: Qt.resolvedUrl("assets/grok.svg")
   readonly property url grokBotIconSource: Qt.resolvedUrl("assets/grok-bot.svg")
   readonly property url cursorIconSource: Qt.resolvedUrl("assets/cursor.svg")
+  readonly property url claudeIconSource: Qt.resolvedUrl("assets/claude.svg")
 
   // Shape contract for shell.summon/hide/toggle routing.
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -231,6 +346,16 @@ BarWidget {
     return command
   }
 
+  function claudeScannerCommand(probe) {
+    var command = ["python3", root.claudeScannerPath]
+    if (probe)
+      command.push("--probe")
+    var configDir = root.resolvePath(root.setting("claudeConfigDir", ""))
+    if (configDir !== "")
+      command.push("--config", configDir)
+    return command
+  }
+
   // ≥1 day → "5d"; under a day → "12h" (no minutes on the bar).
   function formatBarDuration(ms) {
     if (!(ms > 0)) return "now"
@@ -245,6 +370,19 @@ BarWidget {
     if (text === "") return NaN
     var t = new Date(text).getTime()
     return isFinite(t) ? t : NaN
+  }
+
+  function claudePaceFor(startIso, endIso, fallbackMs) {
+    var start = root.parseTimeMs(startIso)
+    var end = root.parseTimeMs(endIso)
+    if (!(end > 0)) return -1
+    if (!(start > 0) || !(start < end)) {
+      if (!(fallbackMs > 0)) return -1
+      start = end - fallbackMs
+    }
+    var frac = (root.nowMs - start) / (end - start)
+    if (!isFinite(frac)) return -1
+    return Math.max(0, Math.min(1, frac))
   }
 
   function applyScan(data) {
@@ -341,12 +479,55 @@ BarWidget {
     root.grokBotHasData = false
   }
 
+  function applyClaudeScan(data) {
+    if (!data || typeof data !== "object") {
+      root.claudeHasData = false
+      return
+    }
+    var sessionPct = Number(data.rateLimitPercent)
+    var weeklyPct = Number(data.secondaryRateLimitPercent)
+    if (!isFinite(sessionPct)) sessionPct = -1
+    if (!isFinite(weeklyPct)) weeklyPct = -1
+    root.claudeSessionPercent = sessionPct
+    root.claudeWeeklyPercent = weeklyPct
+    root.claudeSessionResetAt = String(data.rateLimitResetAt || "")
+    root.claudeSessionPeriodStart = String(data.rateLimitPeriodStart || "")
+    root.claudeWeeklyResetAt = String(data.secondaryRateLimitResetAt || "")
+    root.claudeWeeklyPeriodStart = String(data.secondaryRateLimitPeriodStart || "")
+    root.claudeTierLabel = String(data.tierLabel || "")
+    root.claudeUsageStatusText = String(data.usageStatusText || "")
+    root.claudeAuthHelpText = String(data.authHelpText || "")
+    root.claudeLimits = Array.isArray(data.limits) ? data.limits : []
+    root.claudeHasData = sessionPct >= 0 || weeklyPct >= 0 || root.claudeLimits.length > 0
+    root.nowMs = Date.now()
+    root.injectPanel()
+  }
+
+  function clearClaudeUsage() {
+    root.claudeSessionPercent = -1
+    root.claudeWeeklyPercent = -1
+    root.claudeSessionResetAt = ""
+    root.claudeSessionPeriodStart = ""
+    root.claudeWeeklyResetAt = ""
+    root.claudeWeeklyPeriodStart = ""
+    root.claudeTierLabel = ""
+    root.claudeUsageStatusText = ""
+    root.claudeAuthHelpText = ""
+    root.claudeLimits = []
+    root.claudeHasData = false
+  }
+
   function probeGrok() {
     if (!presenceProbe.running) presenceProbe.running = true
   }
 
   function probeCursor() {
     if (!cursorPresenceProbe.running) cursorPresenceProbe.running = true
+  }
+
+  function probeClaude() {
+    if (!root.showClaudeUsage) return
+    if (!claudePresenceProbe.running) claudePresenceProbe.running = true
   }
 
   function persistSettings(values) {
@@ -377,12 +558,22 @@ BarWidget {
     }
   }
 
+  function setShowClaudeUsage(on) {
+    var next = on === true
+    if (root.showClaudeUsage === next) return
+    root.persistSettings({ showClaudeUsage: next })
+    if (next) root.probeClaude()
+    else root.clearClaudeUsage()
+  }
+
   function refresh() {
     // Availability first: no auth → hide and skip the API.
     if (root.grokAvailable) root.refreshing = true
     if (root.needsCursorSession && root.cursorAvailable) root.cursorRefreshing = true
+    if (root.showClaudeUsage && root.claudeAvailable) root.claudeRefreshing = true
     root.probeGrok()
     if (root.needsCursorSession) root.probeCursor()
+    if (root.showClaudeUsage) root.probeClaude()
   }
 
   function refreshUsage() {
@@ -405,6 +596,17 @@ BarWidget {
     root.cursorRefreshing = true
     cursorUsageScanner.command = root.cursorScannerCommand(false)
     cursorUsageScanner.running = true
+  }
+
+  function refreshClaudeUsage() {
+    if (!root.claudeAvailable) {
+      root.clearClaudeUsage()
+      return
+    }
+    if (claudeUsageScanner.running) return
+    root.claudeRefreshing = true
+    claudeUsageScanner.command = root.claudeScannerCommand(false)
+    claudeUsageScanner.running = true
   }
 
   function injectPanel() {
@@ -437,7 +639,7 @@ BarWidget {
   }
 
   // Missing auth or nothing to report → collapse the slot.
-  visible: grokVisible || grokBotVisible || cursorVisible
+  visible: grokVisible || grokBotVisible || cursorVisible || claudeVisible
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -549,9 +751,49 @@ BarWidget {
     }
   }
 
+  Process {
+    id: claudePresenceProbe
+    command: root.claudeScannerCommand(true)
+    running: false
+
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var status = text.trim()
+        var available = status === "ready"
+        if (root.claudeAvailable !== available)
+          root.claudeAvailable = available
+        if (available) root.refreshClaudeUsage()
+        else root.clearClaudeUsage()
+      }
+    }
+  }
+
+  Process {
+    id: claudeUsageScanner
+    command: root.claudeScannerCommand(false)
+    running: false
+
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          root.applyClaudeScan(JSON.parse(text))
+        } catch (e) {
+          root.claudeHasData = false
+          console.warn("rlimberger.grokbar-omarchy: bad claude scanner JSON", e)
+        }
+      }
+    }
+
+    onExited: root.claudeRefreshing = false
+
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") console.warn("rlimberger.grokbar-omarchy claude", text.trim())
+    }
+  }
+
   Timer {
-    // Auth file can appear after `grok login` / Cursor X sign-in; keep
-    // presence snappier than the usage API poll.
+    // Auth file can appear after `grok login` / Cursor X sign-in / Claude
+    // login; keep presence snappier than the usage API poll.
     interval: 5000
     running: true
     repeat: true
@@ -559,16 +801,20 @@ BarWidget {
     onTriggered: {
       root.probeGrok()
       if (root.needsCursorSession) root.probeCursor()
+      if (root.showClaudeUsage) root.probeClaude()
     }
   }
 
   Timer {
     interval: root.refreshIntervalSec * 1000
-    running: root.grokAvailable || (root.needsCursorSession && root.cursorAvailable)
+    running: root.grokAvailable
+      || (root.needsCursorSession && root.cursorAvailable)
+      || (root.showClaudeUsage && root.claudeAvailable)
     repeat: true
     onTriggered: {
       root.refreshUsage()
       if (root.needsCursorSession) root.refreshCursorUsage()
+      if (root.showClaudeUsage) root.refreshClaudeUsage()
     }
   }
 
@@ -584,7 +830,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     labelVisible: false
-    hasVisualContent: root.grokVisible || root.grokBotVisible || root.cursorVisible
+    hasVisualContent: root.grokVisible || root.grokBotVisible || root.cursorVisible || root.claudeVisible
     active: root.alarming
     // Tooltip suppressed because the panel is the detail view.
     tooltipText: ""
@@ -711,6 +957,43 @@ BarWidget {
           renderType: Text.NativeRendering
         }
       }
+
+      Row {
+        id: claudeCluster
+        visible: root.claudeVisible
+        spacing: Style.space(5)
+
+        ThemedClaudeIcon {
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Repeater {
+          model: root.claudeDisplayLimits
+
+          Text {
+            required property var modelData
+            visible: Number(modelData.percent) >= 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: Math.round(Number(modelData.percent) * 100) + "%"
+            color: modelData.overPace === true || Number(modelData.percent) >= 0.9
+              ? button.activeColor
+              : button.foreground
+            font.family: button.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            renderType: Text.NativeRendering
+          }
+        }
+
+        Text {
+          visible: root.claudeResetText !== ""
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.claudeResetText
+          color: root.dim
+          font.family: button.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          renderType: Text.NativeRendering
+        }
+      }
     }
 
     ThemedGrokIcon {
@@ -725,6 +1008,11 @@ BarWidget {
 
     ThemedCursorIcon {
       visible: button.vertical && root.verticalIcon === "cursor"
+      anchors.centerIn: parent
+    }
+
+    ThemedClaudeIcon {
+      visible: button.vertical && root.verticalIcon === "claude"
       anchors.centerIn: parent
     }
   }
@@ -812,6 +1100,35 @@ BarWidget {
     MultiEffect {
       anchors.fill: cursorIcon
       source: cursorIcon
+      colorization: 1.0
+      colorizationColor: root.foreground
+    }
+  }
+
+  component ThemedClaudeIcon: Item {
+    width: Style.bar.iconCanvas
+    height: Style.bar.iconCanvas
+    implicitWidth: width
+    implicitHeight: height
+
+    readonly property int iconSize: Style.bar.iconFont
+
+    Image {
+      id: claudeIcon
+      anchors.centerIn: parent
+      width: parent.iconSize
+      height: parent.iconSize
+      source: root.claudeIconSource
+      sourceSize.width: parent.iconSize * 2
+      sourceSize.height: parent.iconSize * 2
+      fillMode: Image.PreserveAspectFit
+      visible: false
+      layer.enabled: true
+    }
+
+    MultiEffect {
+      anchors.fill: claudeIcon
+      source: claudeIcon
       colorization: 1.0
       colorizationColor: root.foreground
     }

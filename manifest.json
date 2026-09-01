@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "rlimberger.grokbar-omarchy",
   "name": "Grokbar",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "rlimberger",
   "license": "MIT",
-  "description": "SuperGrok weekly pool on the bar, with optional Cursor monthly and Grok Bot weekly pools.",
+  "description": "SuperGrok weekly pool on the bar, with optional Cursor, Grok Bot, and Claude Code usage.",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Grokbar",
-    "description": "Bar widget with SuperGrok weekly pool plus optional Cursor monthly and Grok Bot weekly clusters.",
+    "description": "Bar widget with SuperGrok weekly pool plus optional Cursor, Grok Bot, and Claude clusters.",
     "category": "AI",
     "aliases": [
       "grokbar-omarchy"
@@ -26,9 +26,11 @@
       "refreshIntervalSec": 300,
       "showCursorUsage": false,
       "showGrokBotUsage": false,
+      "showClaudeUsage": false,
       "authPath": "",
       "stateDbPath": "",
-      "cursorAuthPath": ""
+      "cursorAuthPath": "",
+      "claudeConfigDir": ""
     },
     "schema": [
       {
@@ -43,6 +45,13 @@
         "type": "boolean",
         "label": "Show Grok Bot usage",
         "description": "Show Grok Bot weekly pool on the bar. Off by default; also toggled from panel settings.",
+        "defaultValue": false
+      },
+      {
+        "key": "showClaudeUsage",
+        "type": "boolean",
+        "label": "Show Claude usage",
+        "description": "Show Claude Code session and weekly pools on the bar. Off by default; also toggled from panel settings.",
         "defaultValue": false
       },
       {
@@ -74,6 +83,13 @@
         "label": "Cursor CLI auth.json",
         "defaultValue": "",
         "description": "Optional. Defaults to ~/.config/cursor/auth.json."
+      },
+      {
+        "key": "claudeConfigDir",
+        "type": "path",
+        "label": "Claude config directory",
+        "defaultValue": "",
+        "description": "Optional. Defaults to ~/.claude."
       }
     ]
   }
