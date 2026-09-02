@@ -831,7 +831,8 @@ BarWidget {
     bar: root.bar
     labelVisible: false
     hasVisualContent: root.grokVisible || root.grokBotVisible || root.cursorVisible || root.claudeVisible
-    active: root.alarming
+    active: false
+    useActiveColor: false
     // Tooltip suppressed because the panel is the detail view.
     tooltipText: ""
     fixedWidth: {
@@ -850,6 +851,22 @@ BarWidget {
       anchors.centerIn: parent
       spacing: Style.space(8)
 
+      // Leading rule so this cluster reads apart from workspaces.
+      Item {
+        width: Style.space(8)
+        height: Math.round(Style.bar.iconSlot * 0.55)
+        anchors.verticalCenter: parent.verticalCenter
+
+        Rectangle {
+          width: 2
+          height: parent.height
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          color: button.foreground
+          radius: 1
+        }
+      }
+
       Row {
         id: grokCluster
         visible: root.grokVisible
@@ -863,9 +880,7 @@ BarWidget {
           visible: root.primaryText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.primaryText
-          color: root.overPace || root.displayPercent >= 0.9
-            ? button.activeColor
-            : button.foreground
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -875,7 +890,7 @@ BarWidget {
           visible: root.resetText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.resetText
-          color: root.dim
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -895,9 +910,7 @@ BarWidget {
           visible: root.grokBotText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.grokBotText
-          color: root.grokBotOverPace || root.grokBotDisplay >= 0.9
-            ? button.activeColor
-            : button.foreground
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -907,7 +920,7 @@ BarWidget {
           visible: root.grokBotResetText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.grokBotResetText
-          color: root.dim
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -927,9 +940,7 @@ BarWidget {
           visible: root.cursorAutoText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.cursorAutoText
-          color: root.cursorAutoOverPace || root.cursorAutoDisplay >= 0.9
-            ? button.activeColor
-            : button.foreground
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -939,9 +950,7 @@ BarWidget {
           visible: root.cursorApiText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.cursorApiText
-          color: root.cursorApiOverPace || root.cursorApiDisplay >= 0.9
-            ? button.activeColor
-            : button.foreground
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -951,7 +960,7 @@ BarWidget {
           visible: root.cursorResetText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.cursorResetText
-          color: root.dim
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
@@ -975,9 +984,7 @@ BarWidget {
             visible: Number(modelData.percent) >= 0
             anchors.verticalCenter: parent.verticalCenter
             text: Math.round(Number(modelData.percent) * 100) + "%"
-            color: modelData.overPace === true || Number(modelData.percent) >= 0.9
-              ? button.activeColor
-              : button.foreground
+            color: button.foreground
             font.family: button.fontFamily
             font.pixelSize: Style.font.bodySmall
             renderType: Text.NativeRendering
@@ -988,12 +995,21 @@ BarWidget {
           visible: root.claudeResetText !== ""
           anchors.verticalCenter: parent.verticalCenter
           text: root.claudeResetText
-          color: root.dim
+          color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: Style.font.bodySmall
           renderType: Text.NativeRendering
         }
       }
+    }
+
+    Rectangle {
+      visible: button.vertical
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.top: parent.top
+      width: Style.bar.iconCanvas
+      height: 1
+      color: button.foreground
     }
 
     ThemedGrokIcon {

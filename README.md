@@ -1,5 +1,7 @@
 # Grokbar
 
+Fork of [rlimberger/grokbar-omarchy](https://github.com/rlimberger/grokbar-omarchy). Same plugin id and panel; the bar chip stays on theme foreground (no pace/urgent color) and draws a leading separator from workspaces.
+
 Omarchy bar widget for SuperGrok weekly usage, with optional Cursor monthly usage, optional Grok Bot weekly usage, and optional Claude Code usage.
 
 ![Grokbar usage panel](preview.png)
@@ -18,13 +20,13 @@ Cursor and Grok Bot usage are shown only when the local Cursor session belongs t
 Plugin id: `rlimberger.grokbar-omarchy`. Plugins stay disabled until you enable them.
 
 ```sh
-omarchy plugin add https://github.com/rlimberger/grokbar-omarchy.git --enable
+omarchy plugin add https://github.com/calebhat/grokbar-omarchy.git --enable
 ```
 
 Or add, then enable on the right of the bar:
 
 ```sh
-omarchy plugin add https://github.com/rlimberger/grokbar-omarchy.git
+omarchy plugin add https://github.com/calebhat/grokbar-omarchy.git
 omarchy plugin enable rlimberger.grokbar-omarchy --section right
 ```
 

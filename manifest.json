@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "rlimberger.grokbar-omarchy",
   "name": "Grokbar",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "author": "rlimberger",
   "license": "MIT",
   "description": "SuperGrok weekly pool on the bar, with optional Cursor, Grok Bot, and Claude Code usage.",
