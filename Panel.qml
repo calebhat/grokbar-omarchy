@@ -374,7 +374,9 @@ Panel {
   }
 
   function setCenterHoverRevealSuppressed(value) {
-    if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+    if (root.bar && typeof root.bar.setCenterHoverRevealSuppressed === "function")
+      root.bar.setCenterHoverRevealSuppressed(value)
+    else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
   }
 
@@ -402,6 +404,8 @@ Panel {
   function openFromHotkey() { open() }
 
   function close() {
+    // Hide first: assigning the (now read-only) hover flag used to throw
+    // and leave the exclusive KeyboardPanel overlay grabbing all input.
     pageFlip.stop()
     root.grokIdentityOpen = false
     root.grokBotIdentityOpen = false
@@ -410,8 +414,8 @@ Panel {
     root.settingsOpen = false
     root.pendingSettingsOpen = false
     cardRotation.angle = 0
-    setCenterHoverRevealSuppressed(false)
     root.controller.hide()
+    setCenterHoverRevealSuppressed(false)
   }
 
   function showSettings(open) {
