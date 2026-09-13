@@ -374,10 +374,21 @@ Panel {
   }
 
   function setCenterHoverRevealSuppressed(value) {
-    if (root.bar && typeof root.bar.setCenterHoverRevealSuppressed === "function")
-      root.bar.setCenterHoverRevealSuppressed(value)
-    else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
-      root.bar.centerHoverRevealSuppressed = value
+    if (!root.bar) return
+    // PluginBarApi's centerHoverRevealSuppressed is readonly. Calling
+    // setCenterHoverRevealSuppressed() hits QML's implicit property setter
+    // and throws on Omarchy 4.0.3. Write through the host callback instead.
+    var setter = root.bar._setCenterHoverRevealSuppressed
+    if (typeof setter === "function") {
+      setter(!!value)
+      return
+    }
+    try {
+      if (typeof root.bar.setCenterHoverRevealSuppressed === "function")
+        root.bar.setCenterHoverRevealSuppressed(value)
+      else if ("centerHoverRevealSuppressed" in root.bar)
+        root.bar.centerHoverRevealSuppressed = value
+    } catch (e) {}
   }
 
   function syncRefreshing() {
@@ -397,7 +408,10 @@ Panel {
     root.controller.show()
     root.refresh()
     Qt.callLater(function() {
-      if (root.opened) setCenterHoverRevealSuppressed(true)
+      if (!root.opened) return
+      try {
+        setCenterHoverRevealSuppressed(true)
+      } catch (e) {}
     })
   }
 
